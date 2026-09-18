@@ -130,9 +130,22 @@ export function VideoDeviceElement({ element, onUpdate, isSelected, artboardId }
                 ref={videoRef}
                 data-screen-video={element.id}
                 src={screenVideoSrc}
+                // Same fix as VideoElement: eager first frame for issue #42.
+                // See the comment there for why Linux WebKitGTK needs it.
+                preload="auto"
                 muted
                 loop
                 playsInline
+                onLoadedData={(event) => {
+                  const v = event.currentTarget;
+                  if (v.currentTime === 0 && Number.isFinite(v.duration) && v.duration > 0) {
+                    try { v.currentTime = Math.min(0.001, v.duration / 2); } catch { /* not seekable yet */ }
+                  }
+                }}
+                onCanPlay={(event) => {
+                  const v = event.currentTarget;
+                  if (v.paused) v.play().catch(() => {});
+                }}
                 style={{ width: '100%', height: '100%', objectFit: fit, display: 'block' }}
                 draggable={false}
               />

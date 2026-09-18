@@ -85,9 +85,31 @@ export function VideoElement({ element, onUpdate, isSelected, artboardId }: Vide
             ref={videoRef}
             data-video-layer={element.id}
             src={src}
+            // Issue #42: a freshly uploaded recording used to render as a black
+            // box in the Preview dialog on Linux. preload="auto" makes the
+            // browser fetch metadata AND the first frame eagerly, instead of
+            // waiting for play(), which is what IntersectionObserver does. The
+            // onLoadedData seek to ~0.001s forces the poster frame to be drawn
+            // even when the engine has not started playing yet, so a frame that
+            // was decoded after the IO callback fired is still on screen.
+            preload="auto"
             muted
             loop
             playsInline
+            onLoadedData={(event) => {
+              const v = event.currentTarget;
+              if (v.currentTime === 0 && Number.isFinite(v.duration) && v.duration > 0) {
+                try { v.currentTime = Math.min(0.001, v.duration / 2); } catch { /* not seekable yet */ }
+              }
+            }}
+            onCanPlay={(event) => {
+              // The first play() in useTimelineVideo fires on intersection and
+              // can land before metadata loads on Linux WebKitGTK, where it
+              // resolves into a paused element with no visible frame. Retry
+              // once when the engine is finally ready.
+              const v = event.currentTarget;
+              if (v.paused) v.play().catch(() => {});
+            }}
             style={{
               width: '100%',
               height: '100%',
