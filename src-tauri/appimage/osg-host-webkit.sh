@@ -115,11 +115,15 @@ osg_run_on_host_stack() {
     # host copies win over the bundled ones without patching the ELF.
     export LD_LIBRARY_PATH="$dirs"
 
-    # Match what the bundled path does. linuxdeploy forces the X11 backend
-    # because the GTK it ships crashes on Wayland (tauri-apps/tauri#8541), and
-    # holding that constant keeps this change to one variable: which WebKit
-    # runs, not which display protocol it runs on.
-    export GDK_BACKEND="${GDK_BACKEND:-x11}"
+    # Match what the bundled path does for the GTK it ships, which is broken
+    # on Wayland (tauri-apps/tauri#8541): force X11. The host stack does not
+    # have that problem, so we try Wayland first and fall back to X11. The
+    # user's own GDK_BACKEND still wins; that is the same override the bundled
+    # path respects. A WAYLAND_DISPLAY check would be cleaner but AppRun is
+    # already running, so the compositor is by definition available.
+    if [ -z "${GDK_BACKEND:-}" ]; then
+        export GDK_BACKEND="wayland,x11"
+    fi
 
     exec "$bin" "$@"
 }
@@ -165,6 +169,18 @@ osg_select_stack() {
 
     return 0
 }
+
+# linuxdeploy-plugin-gtk hard-codes GDK_BACKEND=x11 because the GTK it ships
+# crashes on Wayland (tauri-apps/tauri#8541). That is the right call for the
+# bundled stack on hosts that have no system WebKitGTK to fall back on, but it
+# leaves a Wayland session landing on Xwayland with an unscaled webview (issue
+# #34) on every host that DOES have a working system stack. The host stack path
+# above already overrides to wayland,x11; for everyone else, mirror the same
+# default. A user who actually needs X11 can still pin GDK_BACKEND=x11 in
+# their launcher.
+if [ -z "${GDK_BACKEND:-}" ] && [ -n "${WAYLAND_DISPLAY:-}" ]; then
+    export GDK_BACKEND="wayland,x11"
+fi
 
 osg_apply_dark_preference
 osg_select_stack "$this_dir" "$@"
