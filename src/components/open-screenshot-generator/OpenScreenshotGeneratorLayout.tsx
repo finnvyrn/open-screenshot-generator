@@ -2081,6 +2081,100 @@ export function OpenScreenshotGeneratorLayout() {
     }
   }, [handleArtboardsUpdate, runLocaleTranslation, toast]);
 
+  /**
+   * Translate every language in one click. Issue #36: the table only had
+   * per-language buttons, so an eight-language project was eight waits and
+   * eight toasts. The progress dialog already supports a multi-language run
+   * (localeIndex/localeCount), so this loops and lets the dialog breathe.
+   * Returns the merged document, or null when the user cancelled or the
+   * engine is not configured.
+   */
+  const runAllLocalesTranslation = useCallback(async (
+    only: 'empty' | 'stale'
+  ): Promise<ArtboardState[] | null> => {
+    const engines = availableEngines();
+    if (engines.length === 0) {
+      toast({
+        title: 'Translation is not set up',
+        description: 'Add an AI provider key, or type the strings into the translations table.',
+      });
+      return null;
+    }
+    const locales = getProjectLocales(artboardsRef.current)
+      .map((entry) => entry.code)
+      .filter((code) => !!code);
+    if (locales.length === 0) return null;
+
+    let working: ArtboardState[] = artboardsRef.current;
+    let totalTranslated = 0;
+    let totalFailed = 0;
+    let totalSkipped = 0;
+    let rateLimited = false;
+    for (let index = 0; index < locales.length; index++) {
+      const locale = locales[index];
+      const controller = new AbortController();
+      translateAbortRef.current = controller;
+      setIsCancellingTranslate(false);
+      setTranslateProgress({
+        localeLabel: localeLabel(locale),
+        done: 0,
+        total: 0,
+        localeIndex: index + 1,
+        localeCount: locales.length,
+        phase: 'starting',
+      });
+      try {
+        const result = await translateIntoLocale(working, locale, {
+          engine: engines[0],
+          only,
+          signal: controller.signal,
+          onProgress: (done, total) =>
+            setTranslateProgress((prev) =>
+              prev ? { ...prev, done, total, phase: 'translating' } : prev
+            ),
+        });
+        working = result.artboards;
+        totalTranslated += result.translated;
+        totalFailed += result.failed;
+        totalSkipped += result.skipped;
+        if (result.rateLimited) rateLimited = true;
+      } catch (error) {
+        if (controller.signal.aborted) return null;
+        toast({
+          title: 'Translation failed',
+          description:
+            error instanceof Error
+              ? `${error.message}. Kept ${totalTranslated} strings from earlier languages.`
+              : `Kept ${totalTranslated} strings from earlier languages.`,
+          variant: 'destructive',
+        });
+        return working;
+      }
+    }
+    translateAbortRef.current = null;
+    setTranslateProgress(null);
+    setIsCancellingTranslate(false);
+    toast(
+      rateLimited
+        ? {
+            title: 'Translation stopped early',
+            description: `Translated ${totalTranslated}, ${totalFailed} left. Wait a minute and run it again.`,
+            variant: 'destructive',
+          }
+        : {
+            title: `Translated ${totalTranslated} ${totalTranslated === 1 ? 'string' : 'strings'} across ${locales.length} languages`,
+            description:
+              [
+                totalFailed ? `${totalFailed} did not come back` : '',
+                totalSkipped ? `${totalSkipped} you edited were left alone` : '',
+              ]
+                .filter(Boolean)
+                .join('. ') || undefined,
+          }
+    );
+    return working;
+  }, [toast]);
+
   /** Asks the running translation to stop. The dialog stays up until it has. */
   const handleCancelTranslation = useCallback(() => {
     if (!translateAbortRef.current) return;
@@ -7999,6 +8093,7 @@ const generateRandomProjectName = (): string => {
             // Deliberately does NOT commit: the dialog adopts the result as its
             // new snapshot and it lands with everything else on Save.
             onMachineTranslate={(locale, only) => runLocaleTranslation(locale, only)}
+            onMachineTranslateAll={(only) => runAllLocalesTranslation(only)}
           />
 
           <SettingsDialog

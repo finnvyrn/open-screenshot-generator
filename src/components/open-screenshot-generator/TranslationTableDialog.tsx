@@ -35,6 +35,7 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  Languages,
   Loader2,
   RefreshCw,
   Sparkles,
@@ -70,6 +71,8 @@ export interface TranslationTableDialogProps {
   /** ONE commit for the whole session: the next base document, and how many strings moved. */
   onSave: (nextArtboards: ArtboardState[], editedCount: number) => void;
   onMachineTranslate: (locale: string, only: 'empty' | 'stale') => Promise<ArtboardState[] | null>;
+  /** Issue #36: one click fills every language. */
+  onMachineTranslateAll?: (only: 'empty' | 'stale') => Promise<ArtboardState[] | null>;
 }
 
 type RowFilter = 'all' | 'untranslated' | 'stale';
@@ -154,6 +157,7 @@ export function TranslationTableDialog({
   initialFilter,
   onSave,
   onMachineTranslate,
+  onMachineTranslateAll,
 }: TranslationTableDialogProps) {
   const { toast } = useToast();
 
@@ -165,7 +169,7 @@ export function TranslationTableDialog({
   const [filter, setFilter] = useState<RowFilter>('all');
   const [localeFilter, setLocaleFilter] = useState<string>('all');
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [busy, setBusy] = useState<'empty' | 'stale' | null>(null);
+  const [busy, setBusy] = useState<'empty' | 'stale' | 'all-empty' | 'all-stale' | null>(null);
   const [review, setReview] = useState<
     { changes: CsvImportChange[]; unmatched: number; picked: boolean[] } | null
   >(null);
@@ -322,28 +326,59 @@ export function TranslationTableDialog({
       ? 'Choose one language above to translate'
       : undefined;
 
+  /**
+   * Re-keys `edits` onto `next` so a cell typed by hand keeps the human's value
+   * even when the machine wrote the same string in the same place. Shared by
+   * the per-locale and the all-locales buttons because the merge rule is the
+   * same: anything the engine matched exactly is dropped so the edited-count
+   * stays honest.
+   */
+  const reconcileSourceAndEdits = (next: ArtboardState[]) => {
+    setSource(next);
+    setEdits((prev) => {
+      const kept: Record<string, string> = {};
+      const boards = new Map(next.map((board) => [board.id, board]));
+      for (const [key, value] of Object.entries(prev)) {
+        const [artboardId, elementId, locale] = key.split('\u0000');
+        const stored = boards.get(artboardId)?.localized?.[locale]?.[elementId]?.content ?? '';
+        if (value !== stored) kept[key] = value;
+      }
+      return kept;
+    });
+  };
+
   const handleMachineTranslate = async (only: 'empty' | 'stale') => {
     if (!machineLocale || busy) return;
     setBusy(only);
     try {
       const next = await onMachineTranslate(machineLocale, only);
       if (!next) return;
-      setSource(next);
-      // Anything typed by hand stays, and wins: it is re-applied over the
-      // machine's output when this session saves. Writes that the machine
-      // happened to land on exactly are dropped so the count stays honest.
-      setEdits((prev) => {
-        const kept: Record<string, string> = {};
-        const boards = new Map(next.map((board) => [board.id, board]));
-        for (const [key, value] of Object.entries(prev)) {
-          const [artboardId, elementId, locale] = key.split('\u0000');
-          const stored = boards.get(artboardId)?.localized?.[locale]?.[elementId]?.content ?? '';
-          if (value !== stored) kept[key] = value;
-        }
-        return kept;
-      });
+      reconcileSourceAndEdits(next);
     } catch (error) {
       console.error('Machine translation failed', error);
+      toast({
+        title: 'Translation failed',
+        description: error instanceof Error ? error.message : 'Nothing was changed',
+        variant: 'destructive',
+      });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Issue #36: one click that fills every language, so a translator does not
+  // have to pick each one and wait eight times. Without this the per-locale
+  // button is greyed out whenever the language filter is "all" (because
+  // machineLocale is undefined), which is the exact screenshot the user sent.
+  const handleMachineTranslateAll = async (only: 'empty' | 'stale') => {
+    if (!onMachineTranslateAll || busy || allLocales.length === 0) return;
+    setBusy(only === 'empty' ? 'all-empty' : 'all-stale');
+    try {
+      const next = await onMachineTranslateAll(only);
+      if (!next) return;
+      reconcileSourceAndEdits(next);
+    } catch (error) {
+      console.error('Machine translation (all) failed', error);
       toast({
         title: 'Translation failed',
         description: error instanceof Error ? error.message : 'Nothing was changed',
@@ -543,6 +578,51 @@ export function TranslationTableDialog({
                   <RefreshCw className="h-3.5 w-3.5" />
                 )}
                 Translate stale
+              </Button>
+
+              <div className="mx-1 h-5 w-px bg-border" />
+
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                title={
+                  !translationAvailable
+                    ? 'Set up translation to fill these in automatically'
+                    : allLocales.length === 0
+                      ? 'Add a language first'
+                      : `Translate the empty cells across all ${allLocales.length} languages`
+                }
+                disabled={!translationAvailable || allLocales.length === 0 || busy !== null}
+                onClick={() => handleMachineTranslateAll('empty')}
+              >
+                {busy === 'all-empty' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Languages className="h-3.5 w-3.5" />
+                )}
+                Translate all empty
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5"
+                title={
+                  !translationAvailable
+                    ? 'Set up translation to fill these in automatically'
+                    : allLocales.length === 0
+                      ? 'Add a language first'
+                      : `Refresh the stale cells across all ${allLocales.length} languages`
+                }
+                disabled={!translationAvailable || allLocales.length === 0 || busy !== null}
+                onClick={() => handleMachineTranslateAll('stale')}
+              >
+                {busy === 'all-stale' ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                Translate all stale
               </Button>
 
               <div className="mx-1 h-5 w-px bg-border" />
